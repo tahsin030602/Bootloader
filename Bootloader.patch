@@ -1,0 +1,940 @@
+diff -ruN duos24/src/compile/Makefile Bootloader/src/compile/Makefile
+--- duos24/src/compile/Makefile	2024-09-30 23:22:59.000000000 +0600
++++ Bootloader/src/compile/Makefile	2024-11-18 16:14:33.973876066 +0600
+@@ -53,6 +53,8 @@
+ cm4.o \
+ mcu_info.o \
+ kfloat.o \
++kflash.o \
++kcrc.o \
+ sys_clock.o \
+ sys_usart.o \
+ sys_gpio.o \
+@@ -87,6 +89,12 @@
+ kstring.o: $(OS_PATH)/lib/kstring.c
+ 	$(CC) $(CFLAGS) $(INCLUDE) $^ -o $(OBJECT)/$@
+ 
++kflash.o: $(OS_PATH)/lib/kflash.c
++	$(CC) $(CFLAGS) $(INCLUDE) $^ -o $(OBJECT)/$@
++
++kcrc.o: $(OS_PATH)/lib/kcrc.c
++	$(CC) $(CFLAGS) $(INCLUDE) $^ -o $(OBJECT)/$@
++
+ kmain.o: $(OS_PATH)/kmain/kmain.c
+ 	$(CC) $(CFLAGS) $(INCLUDE) $^ -o $(OBJECT)/$@
+ 	
+@@ -161,6 +169,8 @@
+ 
+ duos: $(OBJECT)/kmath.o \
+ 	$(OBJECT)/kfloat.o  \
++	$(OBJECT)/kflash.o  \
++	$(OBJECT)/kcrc.o  \
+ 	$(OBJECT)/cm4.o \
+ 	$(OBJECT)/mcu_info.o \
+ 	$(OBJECT)/kstring.o \
+@@ -190,6 +200,8 @@
+ 	$(OBJECT)/kfloat.o  \
+ 	$(OBJECT)/cm4.o \
+ 	$(OBJECT)/mcu_info.o \
++	$(OBJECT)/kflash.o  \
++	$(OBJECT)/kcrc.o  \
+ 	$(OBJECT)/kstring.o \
+ 	$(OBJECT)/kmain.o \
+ 	$(OBJECT)/stm32_startup.o \
+@@ -216,7 +228,5 @@
+ clean:
+ 	rm -rf $(OBJECT)/*.o $(MAPDIR)/*.map $(TARGET)/* *.o *.elf build/*
+ 
+-# To Students -- Modify to match with the appropriate driver file.
+ load:
+ 	openocd -f /usr/share/openocd/scripts/board/stm32f4discovery.cfg -f /usr/share/openocd/scripts/interface/stlink.cfg -c "program target/duos verify reset exit"
+-
+diff -ruN duos24/src/kern/arch/include/cm4/cm4.h Bootloader/src/kern/arch/include/cm4/cm4.h
+--- duos24/src/kern/arch/include/cm4/cm4.h	2024-09-28 11:53:44.000000000 +0600
++++ Bootloader/src/kern/arch/include/cm4/cm4.h	2024-11-20 12:35:31.958364401 +0600
+@@ -673,6 +673,7 @@
+     __NOP();
+   }
+ }
++
+ /**
+ * Function related to SysTick
+ */
+diff -ruN duos24/src/kern/arch/stm32f446re/include/sys_bus_matrix.h Bootloader/src/kern/arch/stm32f446re/include/sys_bus_matrix.h
+--- duos24/src/kern/arch/stm32f446re/include/sys_bus_matrix.h	2024-05-29 18:08:01.000000000 +0600
++++ Bootloader/src/kern/arch/stm32f446re/include/sys_bus_matrix.h	2024-11-18 02:56:10.925274491 +0600
+@@ -35,6 +35,9 @@
+ #endif
+ #include <stdint.h>
+ 
++
++
++
+ #define CRYSTAL_CLK 8 //8MHz external cystal
+ #define HSIRC_CLK 16
+ 
+@@ -146,6 +149,7 @@
+ } RCC_TypeDef;
+ 
+ 
++
+ typedef struct sys_info_t
+ {
+   uint32_t UIDW;
+diff -ruN duos24/src/kern/arch/stm32f446re/linker/linker.ld Bootloader/src/kern/arch/stm32f446re/linker/linker.ld
+--- duos24/src/kern/arch/stm32f446re/linker/linker.ld	2023-10-15 15:05:22.000000000 +0600
++++ Bootloader/src/kern/arch/stm32f446re/linker/linker.ld	2024-11-05 00:30:55.000000000 +0600
+@@ -1,7 +1,7 @@
+ ENTRY(Reset_Handler)
+ MEMORY
+ {
+-	FLASH(RX): ORIGIN = 0x08000000, LENGTH = 512K
++	FLASH(RX): ORIGIN = 0x08000000, LENGTH = 64K
+ 	SRAM(RWX): ORIGIN = 0x20000000, LENGTH = 128K /* combined both SRAM1 and SRAM2 */
+ }
+ /* Sections placement in the memory */
+diff -ruN duos24/src/kern/dev/include/cmd_def.h Bootloader/src/kern/dev/include/cmd_def.h
+--- duos24/src/kern/dev/include/cmd_def.h	2024-09-30 17:51:15.000000000 +0600
++++ Bootloader/src/kern/dev/include/cmd_def.h	2024-11-16 13:17:49.384640298 +0600
+@@ -25,28 +25,28 @@
+ 
+ typedef struct ecu_ms
+ {
+-uint32_t header; /* last 2 bytes version */
+-uint8_t type;  /* 0x00 request, 
+-                * 0x01--response, 
+-                * 0x02--ack, 
+-                * 0xFF--error 
+-                */
+-uint8_t command; 
+-                /* 
+-                 *  0x00 -- device id read, 
+-                 *  0x01 -- config read, 
+-                 *  0x02 -- config write, 
+-                 *  0x03 -- ODB2-11, 
+-                 *  0x04 -- ODB2 29, 
+-                 *  0x05 -- read current config,
+-                 *  0x0F -- Control Message (reboot),
+-                 *  0x1F -- GPS on/off/read,
+-                 *  0xFF -- unknown or error
+-                 */
+-uint16_t size;
+-uint8_t data[64];
+-//timestamp to be added
+-uint8_t CRC;
++    uint32_t header; /* last 2 bytes version */
++    uint8_t type;  /* 0x00 request, 
++                    * 0x01--response, 
++                    * 0x02--ack, 
++                    * 0xFF--error 
++                    */
++    uint8_t command; 
++                    /* 
++                    *  0x00 -- device id read, 
++                    *  0x01 -- config read, 
++                    *  0x02 -- config write, 
++                    *  0x03 -- ODB2-11, 
++                    *  0x04 -- ODB2 29, 
++                    *  0x05 -- read current config,
++                    *  0x0F -- Control Message (reboot),
++                    *  0x1F -- GPS on/off/read,
++                    *  0xFF -- unknown or error
++                    */
++    uint16_t size;
++    uint8_t data[64];
++    //timestamp to be added
++    uint8_t crc;
+ }ecu_mesg_type;
+ 
+ void extract_odb2_cmd(ecu_mesg_type*);
+diff -ruN duos24/src/kern/include/kcrc.h Bootloader/src/kern/include/kcrc.h
+--- duos24/src/kern/include/kcrc.h	1970-01-01 06:00:00.000000000 +0600
++++ Bootloader/src/kern/include/kcrc.h	2024-11-18 16:14:47.761156539 +0600
+@@ -0,0 +1,17 @@
++#ifndef __CRC_H
++#define __CRC_H
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#include <stdint.h>
++#include<sys_bus_matrix.h>
++
++void CRC32_Init(void);
++void CRC32_Process(uint32_t data);
++uint32_t CRC32_Finalize(uint32_t crc_data);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+\ No newline at end of file
+diff -ruN duos24/src/kern/include/kern/sys_init.h Bootloader/src/kern/include/kern/sys_init.h
+--- duos24/src/kern/include/kern/sys_init.h	2024-09-24 19:56:33.000000000 +0600
++++ Bootloader/src/kern/include/kern/sys_init.h	2024-11-14 03:04:05.180575900 +0600
+@@ -39,7 +39,12 @@
+ #define SET_ACT_DEV(QUEUE,DEV)  (QUEUE |= DEV)
+ void __sys_init(void); 
+ void SoftReset(void);
++void __sys_disable(void);
++char* get_updated_os(void);
++int get_size(void);
+ uint32_t verify_connectivity(void);
++int get_update_status(void);
++char* get_latest_version(void);
+ 
+ #ifdef __cplusplus
+ }
+diff -ruN duos24/src/kern/include/kflash.h Bootloader/src/kern/include/kflash.h
+--- duos24/src/kern/include/kflash.h	1970-01-01 06:00:00.000000000 +0600
++++ Bootloader/src/kern/include/kflash.h	2024-11-18 16:14:50.761217574 +0600
+@@ -0,0 +1,21 @@
++#ifndef __FLASH_H
++#define __FLASH_H
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#include <stdint.h>
++
++void flash_unlock(void);
++void flash_lock(void);
++void erase_os_flash(void);
++void erase_version_flash(void);
++int flash_erased_check(void);
++void flash_write(uint8_t* data, uint32_t length, uint32_t start_address);
++void flash_read(uint32_t length, uint32_t start_address);
++char* get_os_version(uint32_t start_address);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
+\ No newline at end of file
+diff -ruN duos24/src/kern/include/sotom/timer.h Bootloader/src/kern/include/sotom/timer.h
+--- duos24/src/kern/include/sotom/timer.h	2023-10-27 11:33:43.000000000 +0600
++++ Bootloader/src/kern/include/sotom/timer.h	2024-11-06 22:37:56.000000000 +0600
+@@ -20,6 +20,7 @@
+ void Delay_micro_second(uint32_t delay);
+ uint32_t getMiliseconds(); // can track upto 71days
+ uint32_t getMicroseconds(); // upto 1 hour 12 min
++void DisableTimer2(void);
+ 
+ 
+ #ifdef  __cplusplus
+diff -ruN duos24/src/kern/include/UsartRingBuffer.h Bootloader/src/kern/include/UsartRingBuffer.h
+--- duos24/src/kern/include/UsartRingBuffer.h	2024-09-19 16:15:58.000000000 +0600
++++ Bootloader/src/kern/include/UsartRingBuffer.h	2024-11-06 22:37:08.000000000 +0600
+@@ -126,6 +126,8 @@
+ int32_t update_tail(UART_HandleTypeDef *,uint32_t);
+ 
+ void debug_buffer(UART_HandleTypeDef *);
++
++void DisableUart(UART_HandleTypeDef *huart);
+ #ifdef __cplusplus
+ }
+ #endif
+diff -ruN duos24/src/kern/kmain/kmain.c Bootloader/src/kern/kmain/kmain.c
+--- duos24/src/kern/kmain/kmain.c	2024-09-30 23:19:01.000000000 +0600
++++ Bootloader/src/kern/kmain/kmain.c	2024-11-21 02:55:09.015657389 +0600
+@@ -36,14 +36,78 @@
+ #include <kstdio.h>
+ #include <sys_rtc.h>
+ #include <kstring.h>
++#include <kflash.h>
+ #ifndef DEBUG
+ #define DEBUG 1
+ #endif
++
++#define FLASH_BASE_ADDRESS          (0x08000000U)
++#define BOOTLOADER_SIZE             (0x00010000U) // 64 KB
++#define OS_START_ADDRESS    (FLASH_BASE_ADDRESS + BOOTLOADER_SIZE) // 0X08010000
++
++
++void jump_to_os(void) {
++    //Declare a function pointer
++    typedef void (*void_fn)(void);
++    //Get the reset vector address
++    uint32_t* reset_vector_entry = (uint32_t*)(OS_START_ADDRESS + 4U);
++    //Get the reset vector
++    uint32_t* reset_vector = (uint32_t*)(*reset_vector_entry);
++    //Cast the reset vector to a function pointer
++    void_fn jump_fn = (void_fn)reset_vector;
++
++    //Jump to the OS
++    jump_fn();
++}
++
++
++
++
+ void kmain(void)
+-{
++{   
++    // Initialize the system
+     __sys_init();
+-    while (1)
+-    {
+-      
++    // Get the start address of the version
++    uint32_t start_address = 0x08060000U;
++    ms_delay(1000);
++
++    // Check if the OS is updated
++    int isupdate = get_update_status();
++    // If the OS is updated
++    if(isupdate==1){
++        // Get the updated OS
++        char* updated_os = get_updated_os();
++        ms_delay(1000);
++        // Get the length of the updated OS
++        int len = get_size()-1000;
++        // Get the latest version
++        char *version = get_latest_version();
++        ms_delay(1000);
++        erase_version_flash();
++        ms_delay(1000);
++        // Write the version to the flash in sector 7
++        flash_write((uint8_t*) version,__strlen((uint8_t*) version), start_address);
++        ms_delay(1000);
++        kprintf("Updating to version: %s\n", version);
++        ms_delay(500);
++        kprintf("Cleaning old package\n");
++        erase_os_flash();
++        kprintf("Clean complete\n");
++        ms_delay(1000);
++        kprintf("Installing new package\n");
++        // Write the updated OS to the flash in sector 4, 5, 6
++        flash_write((uint8_t*) updated_os + 0x1000, len, OS_START_ADDRESS);
++        ms_delay(1000);
++        kprintf("Successfully Installed\n");
+     }
+-}
++
++    kprintf("Switching to os\n");
++    ms_delay(500);
++    // Jump to the OS
++    jump_to_os();
++    ms_delay(1000);
++
++    __sys_disable();
++
++    while (1) { }
++}
+\ No newline at end of file
+diff -ruN duos24/src/kern/lib/kcrc.c Bootloader/src/kern/lib/kcrc.c
+--- duos24/src/kern/lib/kcrc.c	1970-01-01 06:00:00.000000000 +0600
++++ Bootloader/src/kern/lib/kcrc.c	2024-11-21 02:51:51.356708383 +0600
+@@ -0,0 +1,69 @@
++#include<kcrc.h>
++
++/** 
++  * @brief CRC calculation unit 
++  */
++#define CRC_BASE	(AHB1PERIPH_BASE + 0x3000UL)
++
++
++typedef struct
++{
++  volatile uint32_t DR;         /*!< CRC Data register,             Address offset: 0x00 */
++  volatile uint8_t  IDR;        /*!< CRC Independent data register, Address offset: 0x04 */
++  uint8_t       RESERVED0;  /*!< Reserved, 0x05                                      */
++  uint16_t      RESERVED1;  /*!< Reserved, 0x06                                      */
++  volatile uint32_t CR;         /*!< CRC Control register,          Address offset: 0x08 */
++}CRC_TypeDef;
++
++#define  CRC                 ((CRC_TypeDef *) CRC_BASE)
++/******************************************************************************/
++/*                                                                            */
++/*                          CRC calculation unit                              */
++/*                                                                            */
++/******************************************************************************/
++/*******************  Bit definition for CRC_DR register  *********************/
++#define CRC_DR_DR_Pos       (0U)                                               
++#define CRC_DR_DR_Msk       (0xFFFFFFFFUL << CRC_DR_DR_Pos)                     /*!< 0xFFFFFFFF */
++#define CRC_DR_DR           CRC_DR_DR_Msk                                      /*!< Data register bits */
++
++
++/*******************  Bit definition for CRC_IDR register  ********************/
++#define CRC_IDR_IDR_Pos     (0U)                                               
++#define CRC_IDR_IDR_Msk     (0xFFUL << CRC_IDR_IDR_Pos)                         /*!< 0x000000FF */
++#define CRC_IDR_IDR         CRC_IDR_IDR_Msk                                    /*!< General-purpose 8-bit data register bits */
++
++
++/********************  Bit definition for CRC_CR register  ********************/
++#define CRC_CR_RESET_Pos    (0U)                                               
++#define CRC_CR_RESET_Msk    (0x1UL << CRC_CR_RESET_Pos)                         /*!< 0x00000001 */
++#define CRC_CR_RESET        CRC_CR_RESET_Msk                                   /*!< RESET bit */
++
++//Initialize the CRC32
++void CRC32_Init(void)
++{
++    //Enable the CRC clock
++    RCC->AHB1ENR |= RCC_AHB1ENR_CRCEN;
++    //Reset the CRC
++    CRC->CR |= CRC_CR_RESET;
++}
++
++//Process the data input it to the CRC32 data register
++void CRC32_Process(uint32_t data)
++{
++    //Write the data to the data register
++    CRC->DR = data;
++}
++
++//Finalize the CRC32 calculation
++uint32_t CRC32_Finalize(uint32_t crc_data)
++{ 
++    //Return the XOR of the data register and the crc_data
++    return CRC->DR ^ crc_data;
++}
++
++//Get the CRC32 value from the data register
++uint32_t CRC32_get(void)
++{   
++    //Return the data register
++    return CRC->DR;
++}
+\ No newline at end of file
+diff -ruN duos24/src/kern/lib/kern/sys_init.c Bootloader/src/kern/lib/kern/sys_init.c
+--- duos24/src/kern/lib/kern/sys_init.c	2024-10-01 00:33:03.000000000 +0600
++++ Bootloader/src/kern/lib/kern/sys_init.c	2024-11-21 02:51:07.281367716 +0600
+@@ -27,7 +27,7 @@
+  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+  * SUCH DAMAGE.
+  */
+- 
++
+ #include <sys_init.h>
+ #include <cm4.h>
+ #include <sys_clock.h>
+@@ -41,11 +41,25 @@
+ #include <system_config.h>
+ #include <mcu_info.h>
+ #include <sys_rtc.h>
++#include <kflash.h>
++#include <stdint.h>
++#include<kcrc.h>
+ #ifndef DEBUG
+ #define DEBUG 1
+ #endif
+ extern UART_HandleTypeDef huart6;
+ 
++void display_status(void);
++int check_version(void);
++void system_update(void);
++
++char updated_os[100005];
++int os_size;
++//To store the latest version
++char latest_version[50];
++char response[50];
++uint8_t isupdate = 0;
++
+ void __sys_init(void)
+ {
+ 	__init_sys_clock(); //configure system clock 180 MHz
+@@ -62,19 +76,35 @@
+ 	ConfigTimer2ForSystem();
+ 	__ISB();
+ 	#ifdef DEBUG
+-	kprintf("\n************************************\r\n");
+-	kprintf("Booting Machine Intelligence System 1.0 .....\r\n");
+-	kprintf("Copyright (c) 2024, Prof. Mosaddek Tushar, CSE, DU\r\n");
+-	kprintf("CPUID %x\n", SCB->CPUID);
+-	kprintf("OS Version: 2024.1.0.0\n");
+-	kprintf("Time Elapse %d ms\n",__getTime());
+-	kprintf("*************************************\r\n");
+-	kprintf("# ");
+-	show_system_info();
+-	display_group_info();
++	display_status();
++    //Check if the version is updated
++    if (check_version() == 1) {
++        system_update();
++        isupdate = 1;
++    }
+ 	#endif
+ }
+ 
++void __sys_disable(void)
++{
++ 
++	// DISABLE ALL PERIPHERALS
++	DisableUart(&huart2);
++	DisableUart(&huart6);
++ 
++	// DISABLE TIMER2
++	DisableTimer2();
++    
++	// DISABLE ALL INTERRUPTS
++	NVIC_DisableIRQ(USART2_IRQn);
++	NVIC_DisableIRQ(USART6_IRQn);
++	NVIC_DisableIRQ(TIM2_IRQn);
++	NVIC_DisableIRQ(SysTick_IRQn);
++	NVIC_DisableIRQ(FPU_IRQn);
++ 
++	ms_delay(5000);
++}
++
+ /*
+ * Do not remove it is for debug purpose
+ */
+@@ -84,12 +114,177 @@
+ 	__debugRamUsage();
+ }
+ 
+-/*
+-* Display your Full Name, Registration Number and Class Roll
+-* Each line displays a student or group member information
+-*/
+-void display_group_info(void)
++
++void display_status(void)
+ {
+-	kprintf("Empty Group!! -- Update Now\n")
++    kprintf("Bootloader is running...\n");
++}
++
++//Compare two strings
++int compare_strings(const char *str1, const char *str2) {
++    int i = 0;
++
++    while (str1[i] != '\0' && str2[i] != '\0') {
++        if (str1[i] != str2[i]) {
++            return (str1[i] - str2[i]);
++        }
++        i++;
++    }
++
++    return 0;
++}
++
++int check_version(void) {
++    //Start address of sector 7 where the OS version is stored
++    uint32_t start_address = 0x08060000U;
++    //Get the current version of the OS
++    char* current_version = get_os_version(start_address);
++    //Send the current version to the server
++    kprintf("CHECK_VERSION %s\n", current_version);
++
++    int i = 0;
++    char c = "";
++    do {
++        kscanf("%c", &c);
++        response[i++] = c;
++    } while (c != '\n');
++
++    //Print the response from the server
++    kprintf("%s", response);
++
++    int ret = compare_strings(response, "UPDATE AVAILABLE");
++
++    if (ret == 0) {
++        //If update is available, return 1
++        return 1;
++    }
++
++    return 0;
++}
++
++int char_array_to_int(const char *str, int n) {
++    int result = 0;
++    int i = 0;
++
++    while (i < n) {
++        if (str[i] >= '0' && str[i] <= '9') {
++            result = result * 10 + (str[i] - '0');
++        }
++        i++;
++    }
++
++    return result;
++}
++
++void system_update(void) {
++    //Send the request to the server to get the updated OS
++    kprintf("GET_UPDATE\n");
++
++    //Track the byte position
++    int i = 0;
++    //Use to track the CRC data
++    int s = 0;
++    //Store the size of the file
++    int file_size = 0;
++
++    // read file size
++    char c = "";
++    char len[10];
++    int j = 0;
++    do {
++        kscanf("%c", &c);
++        if (c != '$') {
++            len[j++] = c;
++        }
++    } while (c != '$');
++
++    file_size = char_array_to_int(len, j);
++    os_size = file_size;
++
++    kprintf("ACK\n");
++
++    //500 bytes of data and 4 bytes of CRC data
++    const int CHUNK_SIZE = 504;
++
++    while (file_size != 0) {
++        c = "";
++        for (int k = 0; k < CHUNK_SIZE; k++) {
++            kscanf("%c", &c);
++            updated_os[i++] = c;
++        }
++        int k = 0;
++        //4 byte CRC data at the end of the chunk
++        i = i-4;
++        uint32_t crc_data = 0;
++        //Get the CRC data and store it in crc_data that is 32 bit unsigned integer
++        while(k < 4) {
++            crc_data |= (updated_os[i + k] << (8 * (3-k)));
++            k++;
++        }
++        //Initialize the CRC32
++        CRC32_Init();
++        //Process the data 4bytes at a time
++        for(;s<i;s=s+4){
++            k = 0;
++            uint32_t crc_content = 0;
++            while(k < 4) {
++                //Making 32bit unsigned integer from 4 bytes
++                crc_content |= (updated_os[s + k] << (8 * (3-k)));
++                k++;
++            }
++            //Process the data
++            CRC32_Process(crc_content);
++        }
++        //Finalize the CRC32 calculation
++        if(CRC32_Finalize(crc_data) != 0){
++            //If the CRC data is not matched, then send NACK and adjust the byte position
++            i = i-500;
++            s = i;
++            kprintf("NACK\n");
++        }
++        else{
++            //If the CRC data is matched, then send ACK and adjust the file size
++            if (file_size >= CHUNK_SIZE) {
++                file_size -= CHUNK_SIZE;
++            }
++            else {
++                file_size = 0;
++            }
++            kprintf("ACK\n");
++        }
++
++    }
++
++    //Download complete
++    kprintf("Download complete.Total pakage size is %d Bytes\n", os_size);
++}
++
++char* get_updated_os(void) {
++    //Return the updated OS
++    return updated_os;
++}
++
++int get_size(void) {
++    //Return the size of the updated OS
++    return os_size;
++}
++
++//Return the latest version
++char* get_latest_version(void) {
++    int i = 0;
++    int j = 0;
++
++    while(response[i] != '\n' && response[i] != NULL) {
++        if((response[i] >= 48 && response[i] <= 57) || response[i] == 46){
++            latest_version[j++] = response[i];
++        }
++        i++;
++    }
++    return latest_version;
++}
+ 
++//Return the update status
++int get_update_status(void) {
++    return isupdate;
+ }
++    
+\ No newline at end of file
+diff -ruN duos24/src/kern/lib/kflash.c Bootloader/src/kern/lib/kflash.c
+--- duos24/src/kern/lib/kflash.c	1970-01-01 06:00:00.000000000 +0600
++++ Bootloader/src/kern/lib/kflash.c	2024-11-21 02:52:15.925015064 +0600
+@@ -0,0 +1,164 @@
++#include <kflash.h>
++#include <cm4.h>
++#include <sys_usart.h>
++#include <kstdio.h>
++
++#define FLASH_KEY1 0x45670123
++#define FLASH_KEY2 0xCDEF89AB
++#define FLASH_BASE_ADDRESS          (0x08000000U)
++#define BOOTLOADER_SIZE             (0x00010000U) // 64 KB
++#define OS_START_ADDRESS    (FLASH_BASE_ADDRESS + BOOTLOADER_SIZE) // 0X08010000
++char version[100]="0.0";
++
++
++void flash_unlock(void){
++ 
++    if(FLASH->CR & FLASH_CR_LOCK){
++        FLASH->KEYR = FLASH_KEY1;
++        FLASH->KEYR = FLASH_KEY2;
++    }
++}
++ 
++ 
++void flash_lock(void){
++    FLASH->CR |= FLASH_CR_LOCK;
++}
++
++void erase_os_flash(){
++ 
++    /*
++    sector 4: 0x0801 0000 - 0x0801 FFFF length= 64KB
++    sector 5: 0x0802 0000 - 0x0803 FFFF length= 128KB
++    sector 6: 0x0804 0000 - 0x0805 FFFF length= 128KB
++    */
++ 
++    flash_unlock();
++ 
++    for(uint8_t sector=0x4; sector<=0x6; sector++){
++ 
++        while(FLASH->SR & FLASH_SR_BSY); // Wait for the flash to be ready
++ 
++        FLASH->CR |= FLASH_CR_SER; // Sector Erase activated
++ 
++        FLASH->CR &= ~(0xF << 3); // Clear the sector number 
++        FLASH->CR |= sector << 3;   //select the sector to erase in hex
++ 
++        FLASH->CR |= FLASH_CR_STRT; // start the erase operation
++ 
++        while(FLASH->SR & FLASH_SR_BSY);
++ 
++ 
++    }
++ 
++    flash_lock();
++}
++
++void erase_version_flash(){
++ 
++    /*
++    sector 7: 0x0806 0000 - 0x0807 FFFF length= 128KB
++    */
++ 
++    flash_unlock();
++    uint8_t sector=0x7;
++ 
++ 
++    while(FLASH->SR & FLASH_SR_BSY); // Wait for the flash to be ready
++ 
++    FLASH->CR |= FLASH_CR_SER; // Sector erase enabled
++ 
++    FLASH->CR &= ~(0xF << 3); // Clear the sector number 
++    FLASH->CR |= sector << 3;   //select the sector to erase in hex
++ 
++    FLASH->CR |= FLASH_CR_STRT; // start the erase operation
++ 
++    while(FLASH->SR & FLASH_SR_BSY);
++ 
++    flash_lock();
++}
++
++int flash_erased_check(void){
++    
++    // Check if the OS flash is erased
++    int start_address = OS_START_ADDRESS;
++    int end_address = OS_START_ADDRESS + 0x40000U;
++    
++    // Check if the flash is erased
++    for(int i=start_address; i<end_address; i+=4){
++        if(*(uint32_t*)i != 0xFFFFFFFF){
++            return 0;
++        }
++    }
++    return 1;
++}
++
++void flash_write(uint8_t* data, uint32_t length, uint32_t start_address) {
++    flash_unlock();
++
++    FLASH->CR |= FLASH_CR_PG;  // Enable programming mode for flash
++
++    for (uint32_t i = 0; i < length; i++) {
++        // Write one byte at a time to flash memory
++        *(uint8_t *)(start_address + i) = data[i];
++
++        // Wait until the flash is not busy
++        while (FLASH->SR & FLASH_SR_BSY);
++
++        // Verify the written data
++        if (*(uint8_t *)(start_address + i) != data[i]) {
++            kprintf("Verification failed at address 0x%x\n", (start_address + i));
++            flash_lock();
++            return;
++        }
++
++        // Check for any errors
++        if (FLASH->SR & (FLASH_SR_WRPERR | FLASH_SR_PGAERR | FLASH_SR_PGPERR | FLASH_SR_PGSERR)) {
++            kprintf("Error writing to flash at address 0x%x\n", (start_address + i));
++            FLASH->SR |= (FLASH_SR_WRPERR | FLASH_SR_PGAERR | FLASH_SR_PGPERR | FLASH_SR_PGSERR);  // Clear error flags
++            flash_lock();  // Lock flash after error
++            return;
++        }
++    }
++
++    FLASH->CR &= ~FLASH_CR_PG;  // Disable programming mode after writing
++    flash_lock();  // Lock the flash after writing
++}
++
++void flash_read(uint32_t length, uint32_t start_address) {
++    uint8_t data[length];  // Allocate an array to store the data read from flash
++    
++    for (uint32_t i = 0; i < length; i++) {
++        // Read one byte from flash
++        data[i] = *(uint8_t *)(start_address + i);
++
++        // Display the byte in both hexadecimal and character format
++        if (data[i] >= 32 && data[i] <= 126) {  // Check if the byte is a printable ASCII character
++            kprintf("Data at from flash read  0x%x: 0x%02X ('%c')\n", (start_address + i), data[i], data[i]);
++        } else {
++            kprintf("Data at from flash read 0x%x: 0x%02X\n", (start_address + i), data[i]);
++        }
++
++        // Wait until the flash is not busy
++        while (FLASH->SR & FLASH_SR_BSY);
++    }
++}
++
++char* get_os_version(uint32_t start_address) {
++    uint8_t c;
++    int j = 0;
++    for (uint32_t i = 0; i < 10; i++) {
++        // Read one byte from flash
++        c = *(uint8_t *)(start_address + i);
++
++        // Display the byte in both hexadecimal and character format
++        if ((c >= 48 && c <= 57) || c == 46) {  // Check if the byte is a printable ASCII character
++            version[j++] = (char*) c;
++        } else {
++            // kprintf("Data at from flash read 0x%x: 0x%02X\n", (start_address + i), data[i]);
++        }
++        // Wait until the flash is not busy
++        while (FLASH->SR & FLASH_SR_BSY);
++    }
++    return version;
++}
++
+diff -ruN duos24/src/kern/lib/kstdio.c Bootloader/src/kern/lib/kstdio.c
+--- duos24/src/kern/lib/kstdio.c	2024-09-08 14:25:52.000000000 +0600
++++ Bootloader/src/kern/lib/kstdio.c	2024-11-11 13:34:09.000000000 +0600
+@@ -135,14 +135,19 @@
+ 			switch (*ptr)
+ 			{
+ 			case 'c': //charater
+-				*(uint8_t*)va_arg(list,uint8_t*)=Uart_read(__CONSOLE);
++                int input = -1;
++                do {
++                    input = Uart_read(__CONSOLE);
++                } while(input == -1);
++
++				*(uint8_t*)va_arg(list,uint8_t*)=input;
+ 				break;
+ 			case 'd': //integer number 
+ 				//uart_USART_READ_STR(USART2,buff,50); 
+ 				*(uint32_t*)va_arg(list,uint32_t*)=__str_to_num(buff,10);	
+ 				break;
+ 			case 's': //string without spaces
+-				//_USART_READ_STR(USART2,buff,50); 
++				// _USART_READ_STR(USART2,buff,50);
+ 				str = va_arg(list,uint8_t*);
+ 				len = __strlen(buff);
+ 				for(int u = 0; u<=len; u++)	// copy from buff to user defined char pointer (i.e string)
+diff -ruN duos24/src/kern/lib/sotom/timer.c Bootloader/src/kern/lib/sotom/timer.c
+--- duos24/src/kern/lib/sotom/timer.c	2023-10-15 15:30:05.000000000 +0600
++++ Bootloader/src/kern/lib/sotom/timer.c	2024-11-06 22:26:34.000000000 +0600
+@@ -90,3 +90,18 @@
+   TIM2->CNT = 0;
+   SYS_ROUTINE();
+ }
++
++void DisableTimer2(void)
++{
++  __NVIC_DisableIRQ(TIM2_IRQn);
++ 
++  TIM2->CR1 &= ~(1 << 0);
++ 
++  TIM2_READY_TO_USE = 0;
++ 
++  TIM2->CNT = 0;
++ 
++  TIM2_INTERRUPT_CALL_COUNT = 0;
++ 
++  RCC->APB1ENR &= ~(1 << 0);
++}
+diff -ruN duos24/src/kern/lib/UsartRingBuffer.c Bootloader/src/kern/lib/UsartRingBuffer.c
+--- duos24/src/kern/lib/UsartRingBuffer.c	2024-09-20 13:03:09.000000000 +0600
++++ Bootloader/src/kern/lib/UsartRingBuffer.c	2024-11-06 22:35:25.000000000 +0600
+@@ -37,6 +37,8 @@
+ #include <cm4.h>
+ #include <cmd_def.h>
+ 
++extern UART_HandleTypeDef huart6;
++
+ 
+ /*  Define the device uart and pc uart below according to your setup  */
+ 
+@@ -211,7 +213,7 @@
+ 		{
+ 			unsigned char c = uart->pRxBuffPtr->buffer[uart->pRxBuffPtr->tail];
+ 			uart->pRxBuffPtr->tail = (unsigned int)(uart->pRxBuffPtr->tail + 1) % uart->RxXferSize;
+-			return c;
++            return c;
+ 		}
+ 	}
+ 
+@@ -489,7 +491,8 @@
+ 		huart->Instance->SR; /* Read status register */
+ 
+ 		c = (unsigned char)(huart->Instance->DR); /* Read data register */
+-		store_char(c, huart);					  // store data in buffer
++		// Uart_write(c, huart);
++        store_char(c, huart);					  // store data in buffer
+ 
+ 		return;
+ 	}
+@@ -565,3 +568,26 @@
+ 	}
+ }
+ 
++// added by pekka
++void DisableUart(UART_HandleTypeDef *huart)
++{	
++	//disable uart clock
++	if(huart == &huart2)
++		__RCC_USART2_CLK_DISABLE();
++	else if(huart == &huart6)
++		__RCC_USART6_CLK_DISABLE();
++ 
++ 
++	//disable uart
++	__UART_DISABLE(huart);
++ 
++ 
++	//disable all uart interrupts
++	__UART_DISABLE_IT(huart, UART_IT_PE);
++	__UART_DISABLE_IT(huart, UART_IT_RXNE);
++	__UART_DISABLE_IT(huart, UART_IT_TXE);
++	__UART_DISABLE_IT(huart, UART_IT_ERR);
++	__UART_DISABLE_IT(huart, UART_IT_IDLE);
++	__UART_DISABLE_IT(huart, UART_IT_LBD);
++ 
++}
